@@ -3447,7 +3447,111 @@ class HermesCLI:
             print("  Run: hermes setup")
             print()
 
-        print("  To change model or provider, use: hermes model")
+        print("  Switch mid-chat: /model <provider:model>")
+        print("  Full picker: hermes model")
+
+    def _handle_model_switch(self, cmd: str):
+        """Handle /model command — switch model mid-session.
+
+        Syntax:
+            /model                          → show current model + usage
+            /model claude-sonnet-4          → auto-detect provider
+            /model openai:gpt-5            → explicit provider
+            /model custom                   → switch to custom endpoint
+        """
+        from hermes_cli.models import _PROVIDER_LABELS, normalize_provider
+        from hermes_cli.model_switch import switch_model, switch_to_custom_provider
+
+        parts = cmd.split(maxsplit=1)
+        raw_input = parts[1].strip() if len(parts) > 1 else ""
+
+        # No argument → show current model and usage hint
+        if not raw_input:
+            provider_label = _PROVIDER_LABELS.get(self.provider, self.provider)
+            print(f"\n  Current model: {self.model}")
+            print(f"  Provider: {provider_label}")
+            print()
+            print("  Usage:")
+            print("    /model <model-name>         — auto-detect provider")
+            print("    /model provider:model-name   — explicit provider")
+            print("    /model custom                — switch to custom endpoint")
+            print()
+            print("  Examples:")
+            print("    /model claude-sonnet-4")
+            print("    /model openai:gpt-5")
+            print("    /model deepseek:deepseek-chat")
+            print("    /model custom:my-local-model")
+            print()
+            return
+
+        # Handle bare "custom" → auto-detect custom endpoint
+        if raw_input.lower() == "custom":
+            result = switch_to_custom_provider()
+            if not result.success:
+                print(f"\n  Error: {result.error_message}")
+                return
+            raw_input = f"custom:{result.model}"
+
+        # Same model check (quick path)
+        if raw_input == self.model:
+            print(f"\n  Already using {self.model}")
+            return
+
+        # Run the shared switch pipeline
+        result = switch_model(
+            raw_input,
+            current_provider=self.provider,
+            current_base_url=self.base_url,
+            current_api_key=getattr(self, 'api_key', ''),
+        )
+
+        if not result.success:
+            print(f"\n  Error: {result.error_message}")
+            return
+
+        # Same model after resolution (e.g. alias resolved to current)
+        if result.new_model == self.model and not result.provider_changed:
+            print(f"\n  Already using {self.model}")
+            return
+
+        old_model = self.model
+        old_provider = self.provider
+
+        # Apply the switch to the live agent (if one exists)
+        if self.agent is not None:
+            self.agent.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+
+        # Update CLI-level state so the next _init_agent() (if agent is None)
+        # also picks up the new model
+        self.model = result.new_model
+        self.provider = result.target_provider
+        self.api_key = result.api_key
+        self.base_url = result.base_url
+        self.api_mode = result.api_mode
+
+        # Persist to config.yaml so future sessions use the new model
+        if result.persist:
+            save_config_value("model.default", result.new_model)
+            save_config_value("model.provider", result.target_provider)
+            if result.base_url:
+                save_config_value("model.base_url", result.base_url)
+
+        # Format output
+        new_label = _PROVIDER_LABELS.get(result.target_provider, result.target_provider)
+        print(f"\n  Model switched: {result.new_model} via {new_label}")
+        if result.provider_changed:
+            old_label = _PROVIDER_LABELS.get(old_provider, old_provider)
+            print(f"  Provider: {old_label} → {new_label}")
+        if result.warning_message:
+            print(f"  Warning: {result.warning_message}")
+        print(f"  Prompt cache reset (new model).")
+        print()
 
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
@@ -3998,6 +4102,8 @@ class HermesCLI:
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "model":
+            self._handle_model_switch(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "prompt":
