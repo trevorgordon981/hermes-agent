@@ -4295,6 +4295,10 @@ class AIAgent:
                             logger.warning(
                                 "Streaming failed after partial delivery, not retrying: %s", e
                             )
+                            # Mark the error so the outer retry loop knows the
+                            # response was already streamed to the platform and
+                            # must NOT retry (which would send duplicate messages).
+                            e._partial_stream_delivered = True
                             result["error"] = e
                             return
 
@@ -6781,7 +6785,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = 6
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
@@ -6882,6 +6886,7 @@ class AIAgent:
                             response_invalid = True
                             error_details.append("response.content is empty")
                     else:
+                        logging.warning("DEBUG_RESP type=%s choices_present=%s choices_val=%s", type(response).__name__ if response else "None", hasattr(response, "choices") if response else False, repr(getattr(response, "choices", "MISSING"))[:200])
                         if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
                             response_invalid = True
                             if response is None:
@@ -6931,7 +6936,10 @@ class AIAgent:
                         # Check for x-openrouter-provider or similar metadata
                         if provider_name == "Unknown" and response:
                             # Log all response attributes for debugging
-                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                            try:
+                                resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith("_")}
+                            except TypeError:
+                                resp_attrs = {"raw": str(response)[:200]}
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
@@ -7248,6 +7256,29 @@ class AIAgent:
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
+
+                    # -----------------------------------------------------------
+                    # Partial stream delivery guard.  If the streaming path
+                    # already sent tokens to the platform (Slack/Telegram/etc.)
+                    # before the connection died, retrying would create a NEW
+                    # message — producing duplicates.  Treat as non-retryable.
+                    # -----------------------------------------------------------
+                    if getattr(api_error, "_partial_stream_delivered", False):
+                        logger.warning(
+                            "%sStreaming response already delivered to platform; "
+                            "skipping retry to avoid duplicate messages. error=%s",
+                            self.log_prefix, api_error,
+                        )
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "already_sent": True,
+                            "error": str(api_error),
+                        }
 
                     # -----------------------------------------------------------
                     # Surrogate character recovery.  UnicodeEncodeError happens
