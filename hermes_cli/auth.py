@@ -188,6 +188,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
         base_url_env_var="AI_GATEWAY_BASE_URL",
     ),
+    "redpill": ProviderConfig(
+        id="redpill",
+        name="RedPill",
+        auth_type="api_key",
+        inference_base_url="https://api.redpill.ai/v1",
+        api_key_env_vars=("REDPILL_API_KEY",),
+        base_url_env_var="REDPILL_BASE_URL",
+    ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
         name="OpenCode Zen",
@@ -732,6 +740,7 @@ def resolve_provider(
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "redpill-ai": "redpill", "red-pill": "redpill",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",

@@ -914,6 +914,7 @@ def select_provider_and_model(args=None):
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
+        "redpill": "RedPill",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -936,6 +937,7 @@ def select_provider_and_model(args=None):
     # Step 1: Provider selection — put active provider first with marker
     providers = [
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
+        ("redpill", "RedPill (TEE-protected aggregator API)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
@@ -1023,7 +1025,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "redpill"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -2158,14 +2160,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+    # Only prompt for base URL on first setup (no existing config and no hardcoded default)
+    if not current_base and not pconfig.inference_base_url:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — try live /models endpoint first, fall back to defaults.
     # Providers with large live catalogs (100+ models) use a curated list instead
@@ -4038,7 +4042,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "redpill", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )
