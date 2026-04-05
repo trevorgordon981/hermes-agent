@@ -6,6 +6,7 @@ Based on VLLM's Hermes2ProToolParser.extract_tool_calls()
 """
 
 import json
+import logging
 import re
 import uuid
 from typing import List, Optional, Tuple
@@ -15,7 +16,14 @@ from openai.types.chat.chat_completion_message_tool_call import (
     Function,
 )
 
-from environments.tool_call_parsers import ParseResult, ToolCallParser, register_parser
+from environments.tool_call_parsers import (
+    ParseResult,
+    ToolCallParser,
+    register_parser,
+    robust_json_loads,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @register_parser("hermes")
@@ -24,7 +32,10 @@ class HermesToolCallParser(ToolCallParser):
     Parser for Hermes-format tool calls.
 
     Matches <tool_call>...</tool_call> tags containing JSON with "name" and "arguments".
-    Also handles unclosed <tool_call> at end-of-string (truncated generation).
+    Also handles unclosed <tool_call> at end-of-string (truncated generation),
+    and unbalanced JSON inside the tags (model stopped mid-object before emitting
+    all closing braces — common with local models where finish_reason=stop fires
+    after the inner `arguments` object closes).
     """
 
     # Matches both closed and unclosed tool_call tags
@@ -48,7 +59,13 @@ class HermesToolCallParser(ToolCallParser):
                 if not raw_json.strip():
                     continue
 
-                tc_data = json.loads(raw_json)
+                tc_data = robust_json_loads(raw_json)
+                if tc_data is None or "name" not in tc_data:
+                    logger.debug(
+                        "hermes_parser: dropping unparseable tool_call raw=%r",
+                        raw_json[:120],
+                    )
+                    continue
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
                         id=f"call_{uuid.uuid4().hex[:8]}",
@@ -69,5 +86,6 @@ class HermesToolCallParser(ToolCallParser):
             content = text[: text.find("<tool_call>")].strip()
             return content if content else None, tool_calls
 
-        except Exception:
+        except Exception as e:
+            logger.debug("hermes_parser: unexpected parse error: %s", e)
             return text, None

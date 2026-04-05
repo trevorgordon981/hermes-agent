@@ -18,6 +18,7 @@ Usage:
     # tool_calls = list of ChatCompletionMessageToolCall objects, or None
 """
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Type
@@ -103,6 +104,54 @@ def get_parser(name: str) -> ToolCallParser:
 def list_parsers() -> List[str]:
     """Return sorted list of registered parser names."""
     return sorted(PARSER_REGISTRY.keys())
+
+
+def robust_json_loads(raw: str) -> Optional[dict]:
+    """
+    Parse a JSON object from `raw`, tolerating two common model-output quirks:
+
+    1. Unescaped control characters inside strings (local models frequently
+       emit literal newlines/tabs inside argument strings containing file
+       contents). Handled via `strict=False`.
+    2. Truncated generation where the model stops mid-object, missing one to
+       three trailing close-braces. Handled by appending `}` up to 3 times
+       and retrying. This addresses the common case where a model emits
+       `{"name": "x", "arguments": {...}` and stops after the inner `}`,
+       leaving the outer object unclosed.
+
+    Returns the parsed dict on success, or None on unrecoverable failure
+    (logs a debug message in that case). Callers should fall back to plain
+    text when this returns None.
+    """
+    if not raw or not raw.strip():
+        return None
+    decoder = json.JSONDecoder(strict=False)
+    try:
+        obj, _ = decoder.raw_decode(raw)
+    except (json.JSONDecodeError, ValueError):
+        obj = None
+        stripped = raw.rstrip()
+        for extra in ("}", "}}", "}}}"):
+            try:
+                candidate, _ = decoder.raw_decode(stripped + extra)
+                if isinstance(candidate, dict):
+                    obj = candidate
+                    logger.debug(
+                        "robust_json_loads: recovered by appending %d close-brace(s)",
+                        len(extra),
+                    )
+                    break
+            except (json.JSONDecodeError, ValueError):
+                continue
+    if obj is None:
+        logger.debug("robust_json_loads: unrecoverable raw=%r", raw[:120])
+        return None
+    if not isinstance(obj, dict):
+        logger.debug(
+            "robust_json_loads: non-dict result type=%s", type(obj).__name__
+        )
+        return None
+    return obj
 
 
 # Import all parser modules to trigger registration via @register_parser decorators

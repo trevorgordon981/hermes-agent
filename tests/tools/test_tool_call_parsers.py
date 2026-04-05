@@ -272,3 +272,137 @@ class TestMistralParser:
         text = "[TOOL_CALLS] not valid json"
         content, tool_calls = parser.parse(text)
         assert tool_calls is None
+
+
+# ─── robust_json_loads tests ────────────────────────────────────────────
+
+class TestRobustJsonLoads:
+    """Tests for the shared JSON recovery helper."""
+
+    def test_well_formed(self):
+        from environments.tool_call_parsers import robust_json_loads
+        obj = robust_json_loads('{"name": "x", "arguments": {"a": 1}}')
+        assert obj == {"name": "x", "arguments": {"a": 1}}
+
+    def test_missing_one_close_brace(self):
+        """Model stopped after closing `arguments` but before outer `}`."""
+        from environments.tool_call_parsers import robust_json_loads
+        obj = robust_json_loads('{"name": "x", "arguments": {"a": 1}')
+        assert obj is not None
+        assert obj["name"] == "x"
+        assert obj["arguments"] == {"a": 1}
+
+    def test_missing_two_close_braces(self):
+        from environments.tool_call_parsers import robust_json_loads
+        obj = robust_json_loads('{"name": "x", "arguments": {"a": {"b": 1}')
+        assert obj is not None
+        assert obj["name"] == "x"
+
+    def test_literal_newline_in_string(self):
+        """Local models frequently emit literal \\n inside argument strings."""
+        from environments.tool_call_parsers import robust_json_loads
+        raw = '{"name": "write_file", "arguments": {"content": "line1\nline2\nline3"}}'
+        obj = robust_json_loads(raw)
+        assert obj is not None
+        assert obj["arguments"]["content"] == "line1\nline2\nline3"
+
+    def test_literal_newline_plus_missing_brace(self):
+        """Both recovery modes combined."""
+        from environments.tool_call_parsers import robust_json_loads
+        raw = '{"name": "write_file", "arguments": {"content": "a\nb\nc"}'
+        obj = robust_json_loads(raw)
+        assert obj is not None
+        assert obj["name"] == "write_file"
+        assert obj["arguments"]["content"] == "a\nb\nc"
+
+    def test_empty_string(self):
+        from environments.tool_call_parsers import robust_json_loads
+        assert robust_json_loads("") is None
+        assert robust_json_loads("   ") is None
+
+    def test_none_input(self):
+        from environments.tool_call_parsers import robust_json_loads
+        assert robust_json_loads(None) is None
+
+    def test_unrecoverable_garbage(self):
+        from environments.tool_call_parsers import robust_json_loads
+        assert robust_json_loads("not json at all") is None
+
+    def test_non_dict_result(self):
+        """A top-level JSON array should not be accepted as a tool call."""
+        from environments.tool_call_parsers import robust_json_loads
+        assert robust_json_loads('[1, 2, 3]') is None
+
+
+# ─── Hermes parser robustness tests ────────────────────────────────────
+
+class TestHermesParserRobustness:
+    @pytest.fixture
+    def parser(self):
+        return get_parser("hermes")
+
+    def test_unbalanced_inner_json_recovered(self, parser):
+        """Model emitted the inner `arguments` `}` but stopped before the outer `}`."""
+        text = '<tool_call>{"name": "terminal", "arguments": {"command": "ls -la"}</tool_call>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None, "parser should recover unbalanced JSON"
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["command"] == "ls -la"
+
+    def test_tool_call_with_multiline_content_argument(self, parser):
+        """Argument strings with embedded newlines (common with write_file / skill_manage)."""
+        text = (
+            '<tool_call>{"name": "write_file", '
+            '"arguments": {"path": "out.md", "content": "line1\nline2\nline3"}}'
+            '</tool_call>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "write_file"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["content"] == "line1\nline2\nline3"
+
+    def test_unclosed_tag_plus_unbalanced_json(self, parser):
+        """Model truncated both the JSON and the closing tag."""
+        text = '<tool_call>{"name": "search", "arguments": {"q": "hello"}'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "search"
+
+    def test_missing_name_field_skipped(self, parser):
+        """Object without 'name' is not a tool call."""
+        text = '<tool_call>{"arguments": {"a": 1}}</tool_call>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is None
+
+    def test_unrecoverable_garbage_returns_text(self, parser):
+        text = '<tool_call>this is not json at all</tool_call>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is None
+
+
+# ─── Longcat parser robustness tests ───────────────────────────────────
+
+class TestLongcatParserRobustness:
+    @pytest.fixture
+    def parser(self):
+        return get_parser("longcat")
+
+    def test_unbalanced_inner_json_recovered(self, parser):
+        text = '<longcat_tool_call>{"name": "terminal", "arguments": {"command": "pwd"}</longcat_tool_call>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "terminal"
+
+    def test_multiline_content_argument(self, parser):
+        text = (
+            '<longcat_tool_call>{"name": "write_file", '
+            '"arguments": {"content": "a\nb"}}</longcat_tool_call>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["content"] == "a\nb"
