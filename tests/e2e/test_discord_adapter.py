@@ -58,7 +58,8 @@ class TestMentionStrippedCommandDispatch:
         )
         await dispatch(discord_adapter, msg)
         # Message is accepted (not dropped), but not dispatched as a command
-        discord_adapter.send.assert_awaited()
+        # Text messages don't call send() since they're not commands
+        assert not discord_adapter.send.called
         response = get_response_text(discord_adapter)
         # /help command output lists /new — if it went through as text, it won't
         assert response is None or "/new" not in response
