@@ -714,8 +714,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     try:
         from hermes_state import SessionDB
         _session_db = SessionDB()
+        logger.debug("Job '%s': SessionDB initialized successfully", job.get("id", "?"))
     except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+        logger.warning("Job '%s': SessionDB initialization failed: %s", job.get("id", "?"), e)
+        # Continue without session DB - session_search will return error but job can still run
     
     job_id = job["id"]
     job_name = job["name"]
